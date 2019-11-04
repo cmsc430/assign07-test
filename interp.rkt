@@ -1,5 +1,6 @@
 #lang racket
 (provide (all-defined-out))
+(require "syntax.rkt")
 
 ;; type Value =
 ;; | Integer
@@ -8,96 +9,109 @@
 ;; | String
 ;; | (Box Value)
 ;; | (Cons Value Value)
+;; | Function
+
+;; type Function =
+;; | (Values ... -> Answer)
 
 ;; type Answer = Value | 'err
 
 ;; type REnv = (Listof (List Variable Value))
 
-;; Prog -> Answer
-(define (interp p)
-  (match p
-    [(list 'begin ds ... e)
-     (interp-env e '() ds)]
-    [e (interp-env e '() '())]))
+;; type FAnswer = Answer | 'procedure
 
-;; Expr REnv (Listof Defn) -> Answer
-(define (interp-env e r ds)
+;; This is used because procedures aren't 'read'-able, so we use
+;; the symbol 'procedure for such value
+;; Prog -> FAnswer
+(define (interp e)
+  (match (interp-env (desugar e) '())
+    [(? procedure?) 'procedure]
+    [a a]))
+
+;; Expr REnv -> Answer
+(define (interp-env e r)
   (match e
     [(? value? v) v]
     [''() '()]
+    [`',(? symbol? x) x]
     [(list (? prim? p) es ...)
-     (let ((as (interp-env* es r ds)))
+     (let ((as (interp-env* es r)))
        (interp-prim p as))]
     [`(if ,e0 ,e1 ,e2)
-     (match (interp-env e0 r ds)
+     (match (interp-env e0 r)
        ['err 'err]
        [v
         (if v
-            (interp-env e1 r ds)
-            (interp-env e2 r ds))])]
+            (interp-env e1 r)
+            (interp-env e2 r))])]
     [(? symbol? x)
      (lookup r x)]
     [`(let ,(list `(,xs ,es) ...) ,e)
-     (match (interp-env* es r ds)
+     (match (interp-env* es r)
        ['err 'err]
        [vs
-        (interp-env e (append (zip xs vs) r) ds)])]
-    [(list 'cond cs ... `(else ,en))
-     (interp-cond-env cs en r ds)]
-    [`(apply ,f ,e)
-     (let ((vs (interp-env e r ds)))
-       (if (list? vs)
-           (apply-fun f vs ds)
+        (interp-env e (append (zip xs vs) r))])]
+    [`(letrec ,(list `(,xs ,es) ...) ,e)
+     (letrec ((r* (λ ()
+                    (append
+                     (zip xs
+                          ;; η-expansion to delay evaluating r*
+                          ;; relies on RHSs being functions
+                          (map (λ (l) (λ vs (apply (interp-env l (r*)) vs)))
+                               es))
+                     r))))
+       (interp-env e (r*)))]
+    [`(λ (,xs ...) ,e)
+     (λ vs
+       (if (= (length vs) (length xs))
+           (interp-env e (append (zip xs vs) r))
            'err))]
-    [`(,f . ,es)    (apply-fun f (interp-env* es r ds) ds)]
+    [`(λ (,xs ... . ,x) ,e)
+     (λ vs
+       (if (>= (length vs) (length xs))
+           (interp-env e (append (zip/remainder xs vs x) r))
+           'err))]
+    [`(apply ,e0 ,e1)
+     (let ((v0 (interp-env e0 r))
+           (vs (interp-env e1 r)))
+       (if (list? vs)
+           (apply v0 vs)
+           'err))]
+    [`(,e . ,es)
+     (match (interp-env* (cons e es) r)
+       [(list f vs ...)
+        (if (procedure? f)
+            (apply f vs)
+            'err)])] 
     [_ 'err]))
 
-
-;; Variable (Listof Value) (Listof Defn) -> Answer
-(define (apply-fun f vs ds)
-  (match (defns-lookup ds f)
-    [`(define (,f ,xs ...) ,e)
-     (if (= (length xs) (length vs))
-         (interp-env e (zip xs vs) ds)
-         'err)]
-    [`(define (,f ,xs ... . ,r) ,e)
-     (if (<= (length xs) (length vs))
-         (interp-env e (zip/remainder xs vs r) ds)
-         'err)]))
-
-
-;; (Listof Defn) Symbol -> Defn
-(define (defns-lookup ds f)
-  (findf (match-lambda [`(define (,g . ,_) ,_) (eq? f g)])
-         ds))
-
 ;; (Listof Expr) REnv (Listof Defn) -> (Listof Value) | 'err
-(define (interp-env* es r ds)
+(define (interp-env* es r)
   (match es
     ['() '()]
     [(cons e es)
-     (match (interp-env e r ds)
+     (match (interp-env e r)
        ['err 'err]
-       [v (cons v (interp-env* es r ds))])]))
+       [v (cons v (interp-env* es r))])]))
 
-;; (Listof (List Expr Expr)) Expr REnv (Listof Defn) -> Answer
-(define (interp-cond-env cs en r ds)
+;; (Listof (List Expr Expr)) Expr REnv -> Answer
+(define (interp-cond-env cs en r)
   (match cs
-    ['() (interp-env en r ds)]
+    ['() (interp-env en r)]
     [(cons `(,eq ,ea) cs)
-     (match (interp-env eq r ds)
+     (match (interp-env eq r)
        ['err 'err]
        [v
         (if v
-            (interp-env ea r ds)
-            (interp-cond-env cs en r ds))])]))
+            (interp-env ea r)
+            (interp-cond-env cs en r))])]))
 
 ;; Any -> Boolean
 (define (prim? x)
   (and (symbol? x)
        (memq x '(add1 sub1 zero? abs - char? boolean? integer? integer->char char->integer
                       string? box? empty? cons cons? box unbox car cdr string-length
-                      make-string string-ref = < <= char=? boolean=? +))))
+                      make-string string-ref = < <= char=? boolean=? + eq?))))
 
 ;; Any -> Boolean
 (define (value? x)
@@ -143,6 +157,8 @@
     [(list '<= (? integer? v0) (? integer? v1)) (<= v0 v1)]
     [(list 'char=? (? char? v0) (? char? v1)) (char=? v0 v1)]
     [(list 'boolean=? (? boolean? v0) (? boolean? v1)) (boolean=? v0 v1)]
+    [(list 'eq? v0 v1) (eq? v0 v1)]
+    [(list 'gensym) (gensym)]    
     [_ 'err]))
 
 ;; REnv Variable -> Answer

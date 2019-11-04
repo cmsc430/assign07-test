@@ -71,7 +71,7 @@
 (check-false (expr? '(let ((string-ref 1)) 1)))
 (check-false (expr? '(let ((+ 1)) 1)))
 (check-false (expr? '(let ((string? 1)) 1)))
-(check-false (expr? '(1)))
+;(check-false (expr? '(1)))
 (check-false (expr? '(box)))
 (check-false (expr? '(string-ref "asdf")))
 (check-false (expr? '(+ 1 2 3)))
