@@ -31,6 +31,8 @@
 ;; Expr REnv -> Answer
 (define (interp-env e r)
   (match e
+    ;; produce fresh strings each time a literal is eval'd
+    [(? string? s) (string-copy s)]
     [(? value? v) v]
     [''() '()]
     [`',(? symbol? x) x]
@@ -111,7 +113,7 @@
   (and (symbol? x)
        (memq x '(add1 sub1 zero? abs - char? boolean? integer? integer->char char->integer
                       string? box? empty? cons cons? box unbox car cdr string-length
-                      make-string string-ref = < <= char=? boolean=? + eq?))))
+                      make-string string-ref = < <= char=? boolean=? + eq? gensym))))
 
 ;; Any -> Boolean
 (define (value? x)
